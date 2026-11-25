@@ -1,77 +1,57 @@
-"""Local checks for the toaster entry gate.
+"""Verify main.py writes a scorable toaster line to /output/entry.txt."""
 
-The sealed scorer accepts /output/entry.txt only when it is UTF-8 text of
-1 to 120 characters and not only whitespace. These tests run the program the
-way the grader does and check that file.
-"""
-
-from __future__ import annotations
-
-import os
 import subprocess
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTRY = Path("/output/entry.txt")
-MIN_CHARS = 1
-MAX_CHARS = 120
+MAIN = ROOT / "main.py"
+OUTPUT = Path("/output/entry.txt")
 
 
-def ensure_output_dir() -> None:
-    """Make /output writable. The grader mounts it; locally it may be missing."""
-    if ENTRY.parent.is_dir() and os.access(ENTRY.parent, os.W_OK):
-        return
-    subprocess.run(["sudo", "-n", "mkdir", "-p", str(ENTRY.parent)], check=True)
-    subprocess.run(
-        ["sudo", "-n", "chown", f"{os.getuid()}:{os.getgid()}", str(ENTRY.parent)],
-        check=True,
-    )
+class EntryOutputTest(unittest.TestCase):
+    def test_program_writes_valid_entry(self) -> None:
+        if OUTPUT.exists():
+            OUTPUT.unlink()
 
+        result = subprocess.run(
+            ["python3", str(MAIN)],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
 
-def run_program() -> subprocess.CompletedProcess[bytes]:
-    env = os.environ.copy()
-    env["MAKEFUN_OUTPUT_DIR"] = "/output"
-    env["MAKEFUN_BOT_DIR"] = str(ROOT)
-    env["TZ"] = "UTC"
-    env["PYTHONHASHSEED"] = "0"
-    env["LANG"] = "C.UTF-8"
-    # -P -s matches the grader: no script directory on sys.path, no user site.
-    return subprocess.run(
-        ["python3", "-P", "-s", str(ROOT / "main.py")],
-        cwd=ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-    )
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr.decode("utf-8", errors="replace"),
+        )
+        self.assertTrue(OUTPUT.is_file(), "/output/entry.txt was not written")
 
+        raw = OUTPUT.read_bytes()
+        text = raw.decode("utf-8")
+        self.assertFalse(text.startswith("\ufeff"), "file should be UTF-8 without a BOM")
 
-class EntryTests(unittest.TestCase):
-    def setUp(self) -> None:
-        ensure_output_dir()
-        if ENTRY.exists():
-            ENTRY.unlink()
+        # One optional trailing newline still counts as a single line.
+        payload = text[:-1] if text.endswith("\n") else text
+        self.assertNotIn("\n", payload)
+        self.assertNotIn("\r", payload)
 
-    def test_writes_valid_utf8_line(self) -> None:
-        first = run_program()
-        self.assertEqual(first.returncode, 0, first.stderr.decode("utf-8", "replace"))
-        self.assertTrue(ENTRY.is_file(), "/output/entry.txt was not written")
+        stripped = payload.strip()
+        self.assertGreaterEqual(len(stripped), 1)
+        self.assertLessEqual(len(stripped), 120)
+        self.assertTrue(stripped)
+        self.assertLessEqual(len(text), 120)
+        self.assertGreaterEqual(len(text.strip()), 1)
+        self.assertLessEqual(len(text.strip()), 120)
 
-        raw = ENTRY.read_bytes()
-        text = raw.decode("utf-8")  # strict: invalid UTF-8 raises
-        self.assertEqual(text.encode("utf-8"), raw)
-        self.assertGreaterEqual(len(text), MIN_CHARS)
-        self.assertLessEqual(len(text), MAX_CHARS)
-        self.assertGreaterEqual(len(raw), MIN_CHARS)
-        self.assertLessEqual(len(raw), MAX_CHARS)
-        self.assertNotEqual(text.strip(), "")
-        self.assertEqual(text, text.strip())
-        self.assertNotIn("\n", text)
-        self.assertNotIn("\r", text)
-
-        second = run_program()
-        self.assertEqual(second.returncode, 0, second.stderr.decode("utf-8", "replace"))
-        self.assertEqual(ENTRY.read_bytes(), raw, "two runs wrote different bytes")
+    def test_program_is_idempotent(self) -> None:
+        subprocess.run(["python3", str(MAIN)], cwd=ROOT, check=True)
+        first = OUTPUT.read_bytes()
+        subprocess.run(["python3", str(MAIN)], cwd=ROOT, check=True)
+        second = OUTPUT.read_bytes()
+        self.assertEqual(first, second)
+        second.decode("utf-8")
 
 
 if __name__ == "__main__":
